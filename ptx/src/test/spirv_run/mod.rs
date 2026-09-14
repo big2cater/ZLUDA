@@ -1419,6 +1419,13 @@ fn test_llvm_assert(
 }
 
 fn compare_llvm(name: &str, actual_ll: &str, expected_ll: &str) {
+    // The committed .ll fixtures carry CRLF line endings while the IR this prints
+    // uses LF, so comparing the raw strings fails on the line endings alone -- 189
+    // of them, spanning instructions the translation never had a problem with
+    // (activemask, abs, add, tanh...). compare_ptx in ptx/src/pass/test/mod.rs
+    // normalises for the same reason; the mismatches there were the same thing.
+    let actual_ll = actual_ll.replace("\r\n", "\n");
+    let expected_ll = expected_ll.replace("\r\n", "\n");
     if actual_ll != expected_ll {
         let output_dir = env::var("TEST_PTX_LLVM_FAIL_DIR");
         if let Ok(output_dir) = output_dir {
