@@ -150,6 +150,32 @@ typedef unsigned char e4m3x4 __attribute__((ext_vector_type(4)));
     extern "C" __attribute__((constant)) TYPE ATTR(NAME) \
     __device__
 
+// Whether this compilation targets an ISA whose native WMMA these helpers can use.
+//
+// gfx11 only, deliberately. gfx12 has WMMA and LLVM has patterns for the same
+// intrinsic names (VOP3PInstructions.td, the isGFX12PlusNot12_50 block), but not
+// for the operand shape this file builds. The gfx11 instruction is typed for
+// v16f16 A and B (VOP3PInstructions.td:1439, VOP_V8F32_V16F16_V16F16_V8F32) while
+// the gfx12 one is typed for v8f16 (ibid:1991-1992, F32_F16_WMMA_w32 is
+// [v8f32, v8f16, v8f16, v8f32]) -- and PTX m16n8k16 hands a lane its A fragment
+// as four 32 bit registers, the gfx11 shape. Instruction selection finds nothing
+// to match the call and aborts the whole compilation:
+//
+//   LLVM ERROR: Cannot select: intrinsic %llvm.amdgcn.wmma.f32.16x16x16.f16
+//
+// On an RDNA4 card that is a hard failure rather than a slow path: it repeats for
+// every module holding an MMA (7 of 15 in the reported case), the precompile
+// exits 1, and a run that reaches one of those kernels dies with 0xC0000409.
+// Every gfx12 card hit it; the same sources for gfx1100 are unaffected.
+//
+// It reproduces without gfx12 hardware, which is how this was diagnosed and how
+// the change is checked: `zoc --arch gfx1201 <ptx>` aborts on the previous
+// sources and `zoc --arch gfx1100` succeeds. RDNA4 now takes the software
+// fallback each of these helpers already carries -- slower than a native path,
+// and correct, which is the trade until the gfx12 fragment mapping is worked out
+// and can be verified on a card.
+#define ZLUDA_HAS_NATIVE_WMMA (__oclc_ISA_version >= 11000 && __oclc_ISA_version < 12000)
+
 extern "C"
 {
     extern "C" __attribute__((constant)) uint32_t __oclc_ISA_version __device__;
@@ -1252,7 +1278,7 @@ extern "C"
         // It matters well beyond speed: without it every mma expands to the software
         // fallback inline, and a DLSS module with a thousand of them takes minutes to
         // compile.
-        if (__oclc_ISA_version >= 11000 && __oclc_ISA_version < 13000)
+        if (ZLUDA_HAS_NATIVE_WMMA)
         {
             [[clang::always_inline]] return __llvm_zluda_mma_m16n8k16_f32_f16_f16_f32_optnone(a_reg, b_reg, c_reg);
         }
@@ -1334,7 +1360,7 @@ extern "C"
 
     float4::Native_vec_ FUNC(mma_sync_aligned_m16n8k16_row_col_f32_bf16_bf16_f32)(uint4::Native_vec_ a_reg, uint2::Native_vec_ b_reg, float4::Native_vec_ c_reg)
     {
-        if (__oclc_ISA_version >= 11000 && __oclc_ISA_version < 13000)
+        if (ZLUDA_HAS_NATIVE_WMMA)
         {
             [[clang::always_inline]] return __llvm_zluda_mma_m16n8k16_f32_bf16_bf16_f32_optnone(a_reg, b_reg, c_reg);
         }
@@ -1367,7 +1393,7 @@ extern "C"
 
     uint4::Native_vec_ FUNC(mma_sync_aligned_m16n8k32_row_col_s32_s8_s8_s32)(uint4::Native_vec_ a_reg, uint2::Native_vec_ b_reg, uint4::Native_vec_ c_reg)
     {
-        if (__oclc_ISA_version >= 11000 && __oclc_ISA_version < 13000)
+        if (ZLUDA_HAS_NATIVE_WMMA)
         {
             [[clang::always_inline]] return __llvm_zluda_mma_m16n8k32_s32_s8_s8_fs32_optnone(a_reg, b_reg, c_reg);
         }
@@ -1510,7 +1536,7 @@ __device__ static inline float4::Native_vec_ fp8_mma_half(uint32_t a_row0, uint3
         f16x2 c01 = std::bit_cast<f16x2>(c_reg[0]);
         f16x2 c23 = std::bit_cast<f16x2>(c_reg[1]);
         float4::Native_vec_ d;
-        if (__oclc_ISA_version >= 11000 && __oclc_ISA_version < 13000)
+        if (ZLUDA_HAS_NATIVE_WMMA)
         {
             d = float4::Native_vec_{float(c01.x), float(c01.y), float(c23.x), float(c23.y)};
             d = fp8_mma_half(a_reg[0], a_reg[1], b_reg[0], d); // k 0..15
@@ -1568,7 +1594,7 @@ __device__ static inline float4::Native_vec_ fp8_mma_half(uint32_t a_row0, uint3
         uint2::Native_vec_ b1_reg, uint2::Native_vec_ c1_reg)
     {
         mma_pair_f16 pair;
-        if (__oclc_ISA_version >= 11000 && __oclc_ISA_version < 13000)
+        if (ZLUDA_HAS_NATIVE_WMMA)
         {
             // Read once: both instructions want the same byte pair out of
             // whatever they are handed.
